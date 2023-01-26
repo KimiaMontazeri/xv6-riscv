@@ -444,6 +444,21 @@ wait(uint64 addr)
   }
 }
 
+unsigned short lfsr = 0xACE1u;
+unsigned bit;
+unsigned 
+random(int mn, int mx)
+{
+    unsigned r = 0;
+    int i;
+    for (i = 0; i < 16; ++i) {
+        bit  = ((lfsr >> 0) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5) ) & 1;
+        lfsr =  (lfsr >> 1) | (bit << 15);
+        r = (r << 1) | bit;
+    }
+    return mn + (r % (mx - mn + 1));
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -462,23 +477,51 @@ scheduler(void)
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
+    // Calculate total number of tickets
+    int total_tickets = 0;
+    for(p = proc; p < &proc[NPROC]; p++) 
+    {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) 
+      {
+        total_tickets += p->tickets;
+      }
+      release(&p->lock);
+    }
+
+    // Choose a random number between 0 and total_tickets
+    int winning_ticket = random(0, total_tickets - 1); 
+    int current_ticket = 0;
+
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-
-        int start_ticks = ticks;
-        swtch(&c->context, &p->context);
-        p->ticks += ticks - start_ticks;
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
+      if(p->state != RUNNABLE)
+      {
+        release(&p->lock);
+        continue;
       }
+      current_ticket += p->tickets;
+      if(current_ticket <= winning_ticket)
+      {
+        release(&p->lock);
+        continue;
+      }
+
+      // Switch to chosen process.  It is the process's job
+      // to release its lock and then reacquire it
+      // before jumping back to us.
+      p->state = RUNNING;
+      c->proc = p;
+
+      int start_ticks = ticks;
+      swtch(&c->context, &p->context);
+      int elapsed_ticks = ticks - start_ticks;
+      p->ticks += elapsed_ticks;
+
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      c->proc = 0;
+      
       release(&p->lock);
     }
   }
@@ -715,9 +758,9 @@ int
 getprocessesinfo(uint64 ps_address)
 {
   struct processes_info pinfo;
+  memset(&pinfo, 0, sizeof(pinfo));
   struct proc *p;
   int i = 0;
-  pinfo.num_processes = 0;
   for(p = proc; p < &proc[NPROC]; p++)
   {
     acquire(&p->lock);
@@ -726,8 +769,8 @@ getprocessesinfo(uint64 ps_address)
       pinfo.num_processes++;
     }
     pinfo.pids[i] = p->pid;
-    pinfo.tickets[i] = p->tickets;
     pinfo.ticks[i] = p->ticks;
+    pinfo.tickets[i] = p->tickets;  
     i++;
     release(&p->lock);
   }
