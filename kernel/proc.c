@@ -169,6 +169,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->tickets = 0;
+  p->ticks = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -250,6 +252,9 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  
+  // Set tickets to 1 so that the init process can run first.
+  p->tickets = 1;
 
   release(&p->lock);
 }
@@ -318,9 +323,8 @@ fork(void)
   np->parent = p;
   release(&wait_lock);
 
-  // Set ticks to 0 so that the child process can run first.
   acquire(&np->lock);
-  np->ticks = 0;
+  np->state = RUNNABLE;
   release(&np->lock);
 
   // Set tickets to number of tickets of parent process.
@@ -328,8 +332,9 @@ fork(void)
   np->tickets = p->tickets;
   release(&np->lock);
 
+  // Set ticks to 0 so that the child process can run first.
   acquire(&np->lock);
-  np->state = RUNNABLE;
+  np->ticks = 0;
   release(&np->lock);
 
   return pid;
@@ -444,6 +449,23 @@ wait(uint64 addr)
   }
 }
 
+//Count all tickets
+int
+sum_tickets(void)
+{
+  struct proc *p;
+  int total_tickets = 0;
+  for(p = proc; p < &proc[NPROC]; p++) 
+  {
+    acquire(&p->lock);  //Acquire the lock of the process to see the state
+    if(p->state == RUNNABLE) 
+    {
+      total_tickets += p->tickets; //If the process is runnable, add the number of tickets to the total
+    } 
+  }
+  return total_tickets;
+}
+
 unsigned short lfsr = 0xACE1u;
 unsigned bit;
 unsigned 
@@ -470,59 +492,58 @@ void
 scheduler(void)
 {
   struct proc *p;
+  struct proc *selected_proc = 0; // Process that will be selected to run
   struct cpu *c = mycpu();
+
+  int total_tickets = 0; // Total number of tickets
+  int winning_ticket = 0; // Winning ticket
   
   c->proc = 0;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
-    // Calculate total number of tickets
-    int total_tickets = 0;
-    for(p = proc; p < &proc[NPROC]; p++) 
+    total_tickets = sum_tickets(); //Count all tickets
+
+    if(total_tickets > 0)
     {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) 
+      winning_ticket = random(1, total_tickets); //Choose a random number between 1 and total_tickets
+      for(p = proc; p < &proc[NPROC]; p++) 
       {
-        total_tickets += p->tickets;
+        if(p->state == RUNNABLE)
+        {
+          winning_ticket -= p->tickets; //Decrease the winning ticket by the number of tickets of the process
+        }
+        if(winning_ticket <= 0) //If the winning ticket is less than or equal to 0, then the process is selected
+        {
+          selected_proc = p;
+          break;
+        }
       }
-      release(&p->lock);
-    }
-
-    // Choose a random number between 0 and total_tickets
-    int winning_ticket = random(0, total_tickets - 1); 
-    int current_ticket = 0;
-
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state != RUNNABLE)
+      for(p = proc; p < &proc[NPROC]; p++) 
       {
-        release(&p->lock);
-        continue;
+        if(p->pid != selected_proc->pid) //Release all locks except the lock of the selected process
+        {
+          release(&p->lock);
+        }
       }
-      current_ticket += p->tickets;
-      if(current_ticket <= winning_ticket)
-      {
-        release(&p->lock);
-        continue;
-      }
-
-      // Switch to chosen process.  It is the process's job
-      // to release its lock and then reacquire it
-      // before jumping back to us.
-      p->state = RUNNING;
-      c->proc = p;
-
-      int start_ticks = ticks;
-      swtch(&c->context, &p->context);
-      int elapsed_ticks = ticks - start_ticks;
-      p->ticks += elapsed_ticks;
+      selected_proc->state = RUNNING; //Set the state of the selected process to running
+      selected_proc->ticks++; //Increase the number of ticks of the selected process
+      c->proc = selected_proc; //Set the current process to the selected process
+      swtch(&c->context, &selected_proc->context); //Switch to the selected process
 
       // Process is done running for now.
       // It should have changed its p->state before coming back.
       c->proc = 0;
-      
-      release(&p->lock);
+
+      release(&selected_proc->lock); //Release the lock of the selected process
+    }
+    else 
+    {
+      for(p = proc; p < &proc[NPROC]; p++) 
+      {
+        release(&p->lock);
+      }
     }
   }
 }
@@ -742,14 +763,25 @@ procdump(void)
 int
 settickets(int tickets)
 {
-  struct proc *p = myproc();
-  if(tickets < 0 || tickets > 100) 
+  if(tickets <= 0 || tickets > 1000) 
   {
     return -1;
   }
-  acquire(&p->lock);
-  p->tickets = tickets;
-  release(&p->lock);
+
+  myproc()->tickets = tickets;
+
+  struct proc *p;
+  int i = 0;
+
+  for(p = proc; p < &proc[NPROC]; p++)
+  {
+    if(p->pid == myproc()->pid)
+    {
+      proc[i].tickets = tickets;
+      break;
+    }
+    i++;
+  }
   return 0;
 }
 
@@ -758,21 +790,27 @@ int
 getprocessesinfo(uint64 ps_address)
 {
   struct processes_info pinfo;
-  memset(&pinfo, 0, sizeof(pinfo));
+  pinfo.num_processes = 0;
+  for(int i = 0; i < NPROC; i++)
+  {
+    pinfo.pids[i] = 0;
+    pinfo.ticks[i] = 0;
+    pinfo.tickets[i] = 0;
+  }
+
   struct proc *p;
   int i = 0;
+
   for(p = proc; p < &proc[NPROC]; p++)
   {
-    acquire(&p->lock);
     if(p->state != UNUSED)
     {
+      pinfo.pids[i] = p->pid;
+      pinfo.ticks[i] = p->ticks;
+      pinfo.tickets[i] = p->tickets;
       pinfo.num_processes++;
     }
-    pinfo.pids[i] = p->pid;
-    pinfo.ticks[i] = p->ticks;
-    pinfo.tickets[i] = p->tickets;  
     i++;
-    release(&p->lock);
   }
   if(copyout(myproc()->pagetable, ps_address, (char *)&pinfo, sizeof(pinfo)) < 0)
   {
