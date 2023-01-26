@@ -318,6 +318,16 @@ fork(void)
   np->parent = p;
   release(&wait_lock);
 
+  // Set ticks to 0 so that the child process can run first.
+  acquire(&np->lock);
+  np->ticks = 0;
+  release(&np->lock);
+
+  // Set tickets to number of tickets of parent process.
+  acquire(&np->lock);
+  np->tickets = p->tickets;
+  release(&np->lock);
+
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
@@ -460,7 +470,10 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        int start_ticks = ticks;
         swtch(&c->context, &p->context);
+        p->ticks += ticks - start_ticks;
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -681,3 +694,47 @@ procdump(void)
     printf("\n");
   }
 }
+
+// Set tickets for current process
+int
+settickets(int tickets)
+{
+  struct proc *p = myproc();
+  if(tickets < 0 || tickets > 100) 
+  {
+    return -1;
+  }
+  acquire(&p->lock);
+  p->tickets = tickets;
+  release(&p->lock);
+  return 0;
+}
+
+// Get processes info
+int
+getprocessesinfo(uint64 ps_address)
+{
+  struct processes_info pinfo;
+  struct proc *p;
+  int i = 0;
+  pinfo.num_processes = 0;
+  for(p = proc; p < &proc[NPROC]; p++)
+  {
+    acquire(&p->lock);
+    if(p->state != UNUSED)
+    {
+      pinfo.num_processes++;
+    }
+    pinfo.pids[i] = p->pid;
+    pinfo.tickets[i] = p->tickets;
+    pinfo.ticks[i] = p->ticks;
+    i++;
+    release(&p->lock);
+  }
+  if(copyout(myproc()->pagetable, ps_address, (char *)&pinfo, sizeof(pinfo)) < 0)
+  {
+    return -1;
+  }
+  return 0;
+}
+

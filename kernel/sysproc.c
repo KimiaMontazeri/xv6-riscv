@@ -89,3 +89,22 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// Set ticket for current process
+uint64
+sys_settickets(void)
+{
+  int n;
+  argint(0, &n);
+  return settickets(n);
+}
+
+// Get processes info
+uint64
+sys_getprocessesinfo(void)
+{
+  uint64  struct_addr;
+  argaddr(0, &struct_addr);
+  return getprocessesinfo(struct_addr);
+}
+
