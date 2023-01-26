@@ -4,6 +4,8 @@
 #include "kernel/processes_info.h"
 #define LOOP 1326044832
 
+// This is just a C trick for simulating a long work that we found on the internet
+
 //Avoid optimization
 #pragma GCC push_options
 #pragma GCC optimize ("O0")
@@ -15,6 +17,8 @@ void spin() {
 
 #pragma GCC pop_options
 
+
+// This function prints the number of tickets and ticks that a process has
 void printpinfo(int pid)
 {
 	struct processes_info pi = {0};
@@ -31,8 +35,7 @@ void printpinfo(int pid)
   }
 }
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
     int pid1, pid2, pid3;
     int first;
@@ -73,6 +76,8 @@ main(int argc, char *argv[])
 
     int pid11 = pid1;
 
+    // Wait for the first process to finish and then kill the other two
+    // Print the number of tickets and ticks that each process has
     if((first = wait(&pid11)) > 0 || (first = wait(&pid2)) > 0 || (first = wait(&pid3)) > 0)
     {
       if(first == pid1)
